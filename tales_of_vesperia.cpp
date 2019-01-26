@@ -32,7 +32,7 @@
 
 #include <imgui/imgui.h>
 
-#define TVFIX_VERSION_NUM L"0.4.6.1"
+#define TVFIX_VERSION_NUM L"0.4.6.2"
 #define TVFIX_VERSION_STR LR"(Tales of Vesperia "Fix" v )" TVFIX_VERSION_NUM
 
 extern iSK_INI*             dll_ini;
@@ -86,8 +86,15 @@ struct tv_mem_addr_s
       // Fallback to exhaustive search if not there
       if (scanned_addr == nullptr)
       {
-        scanned_addr =
-          SK_ScanAlignedEx (pattern, pattern_len, pattern_mask);
+        __try {
+          scanned_addr =
+            SK_ScanAlignedEx (pattern, pattern_len, pattern_mask);
+        }
+
+        __except ( ( GetExceptionCode () == EXCEPTION_ACCESS_VIOLATION ) ?
+                 EXCEPTION_EXECUTE_HANDLER : EXCEPTION_CONTINUE_SEARCH )
+        {
+        }
       }
 
       dll_log.Log (L"Scanned address for: %s: %p (alignment=%lu)", desc, scanned_addr, (uintptr_t)scanned_addr % 16);
@@ -213,6 +220,28 @@ static volatile LONG __TVFIX_init = 0;
 
 #define PS_CRC32_SHADOWFILTER 0x84da24a5
 
+
+unsigned int
+__stdcall
+SK_TVFix_CheckVersion (LPVOID user)
+{
+  UNREFERENCED_PARAMETER (user);
+
+  extern bool
+    __stdcall
+    SK_FetchVersionInfo (const wchar_t* wszProduct);
+
+  extern HRESULT
+    __stdcall
+    SK_UpdateSoftware (const wchar_t* wszProduct);
+
+  if (SK_FetchVersionInfo (L"TVF"))
+    SK_UpdateSoftware   (L"TVF");
+
+  return 0;
+}
+
+
 HRESULT
 STDMETHODCALLTYPE
 SK_TVFIX_PresentFirstFrame (IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT Flags)
@@ -279,6 +308,8 @@ SK_TVFIX_PresentFirstFrame (IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
     {
       //SK_D3D11_Shaders.pixel.addTrackingRef (SK_D3D11_Shaders.pixel.blacklist, PS_CRC32_SHADOWFILTER);
     }
+
+    SK_TVFix_CheckVersion (nullptr);
   }
 
   return S_OK;
