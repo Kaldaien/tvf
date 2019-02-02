@@ -32,7 +32,7 @@
 
 #include <imgui/imgui.h>
 
-#define TVFIX_VERSION_NUM L"0.4.6.2"
+#define TVFIX_VERSION_NUM L"0.4.7"
 #define TVFIX_VERSION_STR LR"(Tales of Vesperia "Fix" v )" TVFIX_VERSION_NUM
 
 extern iSK_INI*             dll_ini;
@@ -252,6 +252,25 @@ SK_TVFIX_PresentFirstFrame (IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
 
   if (! InterlockedCompareExchange (&__TVFIX_init, 1, 0))
   { 
+    auto& rb =
+      SK_GetCurrentRenderBackend ();
+
+    CComQIPtr <ID3D11Device> pDevD3D11 (rb.device);
+    CComQIPtr <IDXGIDevice>  pDXGIDev  (pDevD3D11);
+
+    if (pDXGIDev != nullptr)
+    {
+      INT nPrio = 0;
+      //pDXGIDev->GetGPUThreadPriority (&nPrio);
+
+      dll_log.Log (L"GPU Priority Was: %li", nPrio);
+
+      //pDev->SetGPUThreadPriority (7);
+      //pDev->GetGPUThreadPriority (&nPrio);
+      //
+      //dll_log.Log (L"GPU Priority Is: %li", nPrio);
+    }
+
     SK_D3D11_DeclHUDShader_Vtx (0xb0831a43);
     SK_D3D11_DeclHUDShader_Vtx (0xf4dac9d5);
   //SK_D3D11_DeclHUDShader_Pix (0x6d243285);
@@ -384,6 +403,18 @@ SK_TVFix_PlugInCfg (void)
 
     if (ImGui::IsItemHovered ())
       ImGui::SetTooltip ("Eliminate Microstutter, but will raise CPU usage %");
+
+#if 0
+    ImGui::SameLine        (             );
+    ImGui::TextUnformatted ("Gamepad:   ");
+    ImGui::SameLine        (             );
+
+    static int buttons = 0;
+
+    ImGui::RadioButton ("Xbox 360##TVFix_XBox360Icons",  &buttons, 0); ImGui::SameLine ();
+    ImGui::RadioButton ("PlayStation 3##TVFix_PS3Icons", &buttons, 1); ImGui::SameLine ();
+    ImGui::RadioButton ("PlayStation 4##TVFix_PS4Icons", &buttons, 2);
+#endif
 
     ImGui::PushStyleColor (ImGuiCol_Header,        ImVec4 (0.02f, 0.68f, 0.90f, 0.45f));
     ImGui::PushStyleColor (ImGuiCol_HeaderHovered, ImVec4 (0.07f, 0.72f, 0.90f, 0.80f));
@@ -639,4 +670,16 @@ SK_TVFix_PlugInCfg (void)
 void
 SK_TVFix_BeginFrame (void)
 {
+  static volatile LONG  __init = 0;
+  static          auto&     rb =
+    SK_GetCurrentRenderBackend ();
+
+  if (rb.device != nullptr && InterlockedCompareExchange (&__init, 1, 0))
+  {
+    CComQIPtr <ID3D11Device> pDev     (rb.device);
+    CComQIPtr  <IDXGIDevice> pDXGIDev (pDev);
+
+    if (pDXGIDev != nullptr)
+    {   pDXGIDev->SetGPUThreadPriority (6); }
+  }
 }
