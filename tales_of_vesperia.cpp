@@ -32,7 +32,7 @@
 
 #include <imgui/imgui.h>
 
-#define TVFIX_VERSION_NUM L"0.4.7"
+#define TVFIX_VERSION_NUM L"0.5.0"
 #define TVFIX_VERSION_STR LR"(Tales of Vesperia "Fix" v )" TVFIX_VERSION_NUM
 
 extern iSK_INI*             dll_ini;
@@ -216,6 +216,18 @@ bool              __SK_TVFix_ActiveAntiStutter = true;
 sk::ParameterBool* _SK_TVFix_SharpenShadows;
 bool              __SK_TVFix_SharpenShadows = true;
 
+sk::ParameterBool* _SK_TVFix_FixMSAA;
+bool              __SK_TVFix_FixMSAA = true;
+
+sk::ParameterInt* _SK_TVFix_MultisampleCount;
+int              __SK_TVFix_MultisampleCount = 4;
+
+sk::ParameterInt* _SK_TVFix_LastKnown_XRes;
+int              __SK_TVFix_LastKnown_XRes = 3840;
+
+sk::ParameterInt* _SK_TVFix_LastKnown_YRes;
+int              __SK_TVFix_LastKnown_YRes = 2160;
+
 static volatile LONG __TVFIX_init = 0;
 
 #define PS_CRC32_SHADOWFILTER 0x84da24a5
@@ -341,6 +353,18 @@ SK_TVFix_InitPlugin (void)
 
     //instn__draw_HUD
 
+
+  _SK_TVFix_LastKnown_XRes =
+    _CreateConfigParameterInt ( L"TVFix.Render",
+                               L"LastRenderWidth", __SK_TVFix_LastKnown_XRes,
+                               L"Store the last known width" );
+
+  _SK_TVFix_LastKnown_YRes =
+    _CreateConfigParameterInt ( L"TVFix.Render",
+                               L"LastRenderHeight", __SK_TVFix_LastKnown_YRes,
+                               L"Store the last known height" );
+
+
   instn__model_animation =
   { "\xE8\xCE\x1C\x00\x00",
     //----------------------------------------------//
@@ -403,6 +427,21 @@ SK_TVFix_PlugInCfg (void)
 
     if (ImGui::IsItemHovered ())
       ImGui::SetTooltip ("Eliminate Microstutter, but will raise CPU usage %");
+
+    ImGui::SameLine (); ImGui::Spacing (); ImGui::SameLine (); ImGui::Spacing ();
+    ImGui::SameLine (); ImGui::Spacing (); ImGui::SameLine ();
+
+    ImGui::Checkbox ("Fix MSAA###SK_TVFIX_MSAA", &__SK_TVFix_FixMSAA);
+
+    if (ImGui::IsItemHovered ())
+    {
+      ImGui::BeginTooltip    ();
+      ImGui::TextUnformatted ("Render the entire scene using MSAA instead of just a few polygons here and there.");
+      ImGui::Separator       ();
+      ImGui::BulletText      ("Only works in Fullscreen Mode right now");
+      ImGui::BulletText      ("To use Fullscreen Mode, ensure Flip Model is disabled in SwapChain settings.");
+      ImGui::EndTooltip      ();
+    }
 
 #if 0
     ImGui::SameLine        (             );
@@ -682,4 +721,198 @@ SK_TVFix_BeginFrame (void)
     if (pDXGIDev != nullptr)
     {   pDXGIDev->SetGPUThreadPriority (6); }
   }
+
+  static bool enable =
+    config.cegui.enable;
+
+  LONG ulFramesDrawn =
+    SK_GetFramesDrawn ();
+
+  if (ulFramesDrawn > 30 && ulFramesDrawn < 33)
+  {
+    if (     ulFramesDrawn == 31)
+      config.cegui.enable = (! enable);
+    else if (ulFramesDrawn == 32)
+      config.cegui.enable =    enable;
+
+    extern void SK_CEGUI_QueueResetD3D11 (void);
+    SK_RunOnce (SK_CEGUI_QueueResetD3D11 ());
+  }
+
+  _SK_TVFix_LastKnown_XRes->store ((int)ImGui::GetIO ().DisplaySize.x);
+  _SK_TVFix_LastKnown_YRes->store ((int)ImGui::GetIO ().DisplaySize.y);
+}
+
+
+void
+SK_TVFix_CreateTexture2D (
+  D3D11_TEXTURE2D_DESC    *pDesc )
+{
+  extern bool __SK_HDR_16BitSwap;
+
+  if (__SK_HDR_16BitSwap)
+  {
+    if ( ( pDesc->BindFlags & D3D11_BIND_RENDER_TARGET  )         &&
+         ( pDesc->Format   ==  DXGI_FORMAT_B8G8R8A8_UNORM)        &&
+           pDesc->Width    == (unsigned)__SK_TVFix_LastKnown_XRes &&
+           pDesc->Height   == (unsigned)__SK_TVFix_LastKnown_YRes )
+    {
+      pDesc->Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
+    }
+  }
+}
+
+bool
+SK_TVFix_DrawHandler_D3D11 (ID3D11DeviceContext* pDevCtx, SK_TLS* pTLS = nullptr, INT d_idx = -1)
+{
+  if ( (! __SK_TVFix_FixMSAA) ||
+        config.render.framerate.flip_discard )
+  {
+    return false;
+  }
+
+  UNREFERENCED_PARAMETER (d_idx);
+  UNREFERENCED_PARAMETER (pTLS);
+
+  CComPtr <ID3D11RasterizerState> pRaster         = nullptr;
+  CComPtr <ID3D11RasterizerState> pRasterOverride = nullptr;
+
+  pDevCtx->RSGetState (&pRaster.p);
+
+  D3D11_TEXTURE2D_DESC  texDesc    = {};
+  D3D11_RASTERIZER_DESC rasterDesc = {};
+  pRaster->GetDesc    (&rasterDesc);
+
+  ID3D11RenderTargetView*          pRTV [8] = { };
+  CComPtr <ID3D11DepthStencilView> pDSV      = nullptr;
+
+  pDevCtx->OMGetRenderTargets (8, &pRTV [0], &pDSV.p);
+
+  CComPtr <ID3D11RenderTargetView> rtvs_ [8] = {
+    pRTV [ 0], pRTV [ 1], pRTV [ 2], pRTV [ 3],
+    pRTV [ 4], pRTV [ 5], pRTV [ 6], pRTV [ 7]
+  };
+
+  struct {
+    bool depth_stencil = false;
+    bool color         = false;
+  } compatibility;
+
+  //
+  // Depth/Stencil must be multisampled or the whole thing will
+  //   blow up !!
+  //
+  //   -> Special Case: Rendering w/o a depth buffer
+  //
+  if (pDSV != nullptr)
+  {
+    D3D11_DEPTH_STENCIL_VIEW_DESC
+                    dsvDesc = { };
+    pDSV->GetDesc (&dsvDesc);
+
+    if (dsvDesc.ViewDimension != D3D11_DSV_DIMENSION_TEXTURE2DMS)
+    {
+      compatibility.depth_stencil = false;
+    }
+
+    else
+      compatibility.depth_stencil = true;
+  }
+
+  if ( compatibility.depth_stencil && pRTV [0] != nullptr )
+  {
+    SK_ReleaseAssert (pRTV [1] == nullptr);
+
+    D3D11_RENDER_TARGET_VIEW_DESC
+                        rtvDesc = { };
+    pRTV [0]->GetDesc (&rtvDesc);
+    
+    if (rtvDesc.ViewDimension == D3D11_RTV_DIMENSION_TEXTURE2DMS)
+    {
+      compatibility.color = true;
+    }
+  }
+
+  if ( rasterDesc.MultisampleEnable != TRUE  &&
+       rasterDesc.ScissorEnable     == FALSE &&
+       compatibility.color )
+  {
+    CComPtr <ID3D11Device> pDev = nullptr;
+    pDevCtx->GetDevice   (&pDev.p);
+
+    SK_RunOnce (
+      dll_log.Log (L"[  ToVFix  ]  Multisample Rasterization -FORCED- ON")
+    );
+
+    SK_LOG2 ( ( L"Multisample Rasterization -FORCED- ON" ),
+                L"  ToVFix  " );
+
+    rasterDesc.MultisampleEnable = TRUE;
+
+    pDev->CreateRasterizerState (&rasterDesc, &pRasterOverride.p);
+  }
+
+  else if (rasterDesc.MultisampleEnable)
+  {
+    SK_RunOnce (
+      dll_log.Log (L"[  ToVFix  ]  Multisample Rasterization *already* on")
+    );
+
+    SK_LOG2 ( ( L"Multisample Rasterization: *already* on" ),
+                L"  ToVFix  " );
+  }
+#if 0
+  UINT dev_idx =
+    SK_D3D11_GetDeviceContextHandle (pDevCtx);
+
+  uint32_t ps_crc32 =
+    SK_D3D11_Shaders.pixel.current.shader [dev_idx];
+
+  if (ps_crc32 == 0x995ecda7)
+  {
+    ID3D11Buffer* pBuffer = nullptr;
+    pDevCtx->PSGetConstantBuffers (0, 1, &pBuffer);
+
+    if (pBuffer != nullptr)
+    {
+      D3D11_BUFFER_DESC bufDesc = { };
+      pBuffer->GetDesc (&bufDesc);
+
+      CComPtr <ID3D11Buffer> pCopyBuf = nullptr;
+      CComPtr <ID3D11Device> pDevice  = nullptr;
+      pDevCtx->GetDevice (&pDevice);
+
+      bufDesc.Usage          = D3D11_USAGE_STAGING;
+      bufDesc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+      bufDesc.BindFlags      = 0x0;
+
+      if (SUCCEEDED (pDevice->CreateBuffer (&bufDesc, nullptr, &pCopyBuf)))
+      {
+        pDevCtx->CopyResource   (pCopyBuf, pBuffer);
+
+        D3D11_MAPPED_SUBRESOURCE mapped = { };
+        pDevCtx->Map (pCopyBuf, 0, D3D11_MAP_READ, 0x0, &mapped);
+
+        float* fMap =
+          ((float *) mapped.pData);
+
+        for (int i = 0; i < 8; i++)
+        {
+          dll_log.Log (L"Row %lu: %6.4f, %6.4f, %6.4f, %6.4f",
+                       i, fMap [0], fMap [1], fMap [2], fMap [3]);
+          fMap += 4;
+        }
+
+        pDevCtx->Unmap (pCopyBuf, 0);
+      }
+
+      pBuffer->Release ();
+    }
+  }
+#endif
+
+  if (pRasterOverride != nullptr)
+    pDevCtx->RSSetState (pRasterOverride);
+
+  return false;
 }
