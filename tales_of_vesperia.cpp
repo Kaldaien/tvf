@@ -32,7 +32,7 @@
 
 #include <imgui/imgui.h>
 
-#define TVFIX_VERSION_NUM L"0.5.1.1"
+#define TVFIX_VERSION_NUM L"0.5.1.2"
 #define TVFIX_VERSION_STR LR"(Tales of Vesperia "Fix" v )" TVFIX_VERSION_NUM
 
 extern iSK_INI*             dll_ini;
@@ -189,7 +189,19 @@ struct tv_mem_addr_s
 };
 
 
-bool __SK_TVFix_NoRenderSleep = true;
+bool  __SK_TVFix_NoRenderSleep    = true;
+
+
+//
+// Callbacks are running on the wrong thread
+//
+//  ==> Serious deadlock hazard! <==
+//
+//  * We'll run the callbacks manually
+//      from the swapchain thread.
+//
+DWORD __SK_TVFix_MagicSteamThread = 0;
+
 
 tv_mem_addr_s instn__model_animation  = { };
 tv_mem_addr_s instn__particle_effects = { };
@@ -266,18 +278,43 @@ SK_TVFIX_PresentFirstFrame (IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
 
   if (! InterlockedCompareExchange (&__TVFIX_init, 1, 0))
   {
+    __SK_TVFix_MagicSteamThread = GetCurrentThreadId ();
+
     SK_TVFix_CheckVersion (nullptr);
   }
 
   return S_OK;
 }
 
+
+
+extern "C" void __cdecl
+SteamAPI_RunCallbacks_Detour (void);
+
+typedef void (__cdecl *SteamAPI_RunCallbacks_Hook_pfn)(void);
+                static SteamAPI_RunCallbacks_Hook_pfn
+                       SteamAPI_RunCallbacks_Original = nullptr;
+
+static void
+SteamAPI_RunCallbacks_Preamble (void)
+{
+  if (GetCurrentThreadId () != __SK_TVFix_MagicSteamThread)
+    return;
+
+  SteamAPI_RunCallbacks_Original ();
+}
+
+
 void
 SK_TVFix_InitPlugin (void)
 {
   SK_SetPluginName (TVFIX_VERSION_STR);
 
-    //instn__draw_HUD
+  SK_CreateFuncHook (      L"SteamAPI_RunCallbacks_Detour",
+                             SteamAPI_RunCallbacks_Detour,
+                             SteamAPI_RunCallbacks_Preamble,
+    static_cast_p2p <void> (&SteamAPI_RunCallbacks_Original) );
+  SK_EnableHook     (        SteamAPI_RunCallbacks_Detour    );
 
 
   _SK_TVFix_LastKnown_XRes =
@@ -683,6 +720,12 @@ SK_TVFix_PlugInCfg (void)
 void
 SK_TVFix_BeginFrame (void)
 {
+  // Always run callbacks from the SwapChain thread,
+  //   bad stuff will happen if Steam's overlay is loaded
+  //     otherwise !!
+  SteamAPI_RunCallbacks_Detour ();
+
+
   static volatile LONG  __init = 0;
   static          auto&     rb =
     SK_GetCurrentRenderBackend ();
@@ -803,11 +846,18 @@ SK_TVFix_CreateTexture2D (
     if ( ( pDesc->BindFlags & D3D11_BIND_RENDER_TARGET  ) &&
          ( pDesc->Format   == DXGI_FORMAT_B8G8R8A8_UNORM) )
     {
-      pDesc->Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
+      if ( (UINT)__SK_TVFix_LastKnown_XRes == pDesc->Width &&
+           (UINT)__SK_TVFix_LastKnown_YRes == pDesc->Height )
+      {
+        pDesc->Format = DXGI_FORMAT_R16G16B16A16_UNORM;
+      }
+
+      else
+        pDesc->Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
     }
   }
 
-  if (pDesc->SampleDesc.Count != 1)
+  if (pDesc->SampleDesc.Count > 1)
   {
     pDesc->SampleDesc.Count =
       ( config.render.dxgi.msaa_samples != -1 ?
@@ -818,8 +868,7 @@ SK_TVFix_CreateTexture2D (
 bool
 SK_TVFix_DrawHandler_D3D11 (ID3D11DeviceContext* pDevCtx, SK_TLS* pTLS = nullptr, INT d_idx = -1)
 {
-  if ( (! __SK_TVFix_FixMSAA) ||
-        config.render.framerate.flip_discard )
+  if (! __SK_TVFix_FixMSAA)
   {
     return false;
   }
