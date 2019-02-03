@@ -32,11 +32,13 @@
 
 #include <imgui/imgui.h>
 
-#define TVFIX_VERSION_NUM L"0.5.1"
+#define TVFIX_VERSION_NUM L"0.5.1.1"
 #define TVFIX_VERSION_STR LR"(Tales of Vesperia "Fix" v )" TVFIX_VERSION_NUM
 
 extern iSK_INI*             dll_ini;
 extern sk::ParameterFactory g_ParameterFactory;
+
+extern bool __SK_HDR_16BitSwap;
 
 struct tv_mem_addr_s
 {
@@ -263,83 +265,7 @@ SK_TVFIX_PresentFirstFrame (IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
   UNREFERENCED_PARAMETER (Flags);
 
   if (! InterlockedCompareExchange (&__TVFIX_init, 1, 0))
-  { 
-    auto& rb =
-      SK_GetCurrentRenderBackend ();
-
-    CComQIPtr <ID3D11Device> pDevD3D11 (rb.device);
-    CComQIPtr <IDXGIDevice>  pDXGIDev  (pDevD3D11);
-
-    if (pDXGIDev != nullptr)
-    {
-      INT nPrio = 0;
-      //pDXGIDev->GetGPUThreadPriority (&nPrio);
-
-      dll_log.Log (L"GPU Priority Was: %li", nPrio);
-
-      //pDev->SetGPUThreadPriority (7);
-      //pDev->GetGPUThreadPriority (&nPrio);
-      //
-      //dll_log.Log (L"GPU Priority Is: %li", nPrio);
-    }
-
-    SK_D3D11_DeclHUDShader_Vtx (0xb0831a43);
-    SK_D3D11_DeclHUDShader_Vtx (0xf4dac9d5);
-  //SK_D3D11_DeclHUDShader_Pix (0x6d243285);
-
-    instn__model_animation.scan  ();
-    instn__particle_effects.scan ();
-    instn__depth_of_field.scan   ();
-    instn__blur.scan             ();
-    instn__bloom.scan            ();
-
-    _SK_TVFix_DisableDepthOfField =
-      _CreateConfigParameterBool ( L"TVFix.Render",
-                                   L"DisableDepthOfField",  __SK_TVFix_DisableDepthOfField,
-                                   L"Disable Depth of Field" );
-
-    _SK_TVFix_DisableBloom =
-      _CreateConfigParameterBool ( L"TVFix.Render",
-                                   L"DisableBloom",  __SK_TVFix_DisableBloom,
-                                   L"Disable Bloom Lighting" );
-
-    _SK_TVFix_DisableBlur =
-      _CreateConfigParameterBool ( L"TVFix.Render",
-                                   L"DisableBlur",  __SK_TVFix_DisableBlur,
-                                   L"Disable Blur" );
-
-    _SK_TVFix_SharpenShadows =
-      _CreateConfigParameterBool ( L"TVFix.Render",
-                                  L"SharpenShadows",  __SK_TVFix_SharpenShadows,
-                                  L"Sharpen Shadows" );
-
-    _SK_TVFix_ActiveAntiStutter =
-      _CreateConfigParameterBool ( L"TVFix.FrameRate",
-                                   L"EliminateMicroStutter", __SK_TVFix_ActiveAntiStutter,
-                                   L"Active Anti-Stutter" );
-
-    if (__SK_TVFix_DisableDepthOfField)
-    {
-      ////instn__depth_of_field.disable ();
-      SK_D3D11_Shaders.pixel.addTrackingRef (SK_D3D11_Shaders.pixel.blacklist, 0x27fbcdeb); 
-      SK_D3D11_Shaders.pixel.addTrackingRef (SK_D3D11_Shaders.pixel.blacklist, 0x8dfd78fd);
-    }
-
-    if (__SK_TVFix_DisableBloom)
-    {
-      instn__bloom.disable ();
-    }
-
-    if (__SK_TVFix_DisableBlur)
-    {
-      instn__blur.disable ();
-    }
-
-    if (__SK_TVFix_SharpenShadows)
-    {
-      //SK_D3D11_Shaders.pixel.addTrackingRef (SK_D3D11_Shaders.pixel.blacklist, PS_CRC32_SHADOWFILTER);
-    }
-
+  {
     SK_TVFix_CheckVersion (nullptr);
   }
 
@@ -436,12 +362,7 @@ SK_TVFix_PlugInCfg (void)
 
     if (ImGui::IsItemHovered ())
     {
-      ImGui::BeginTooltip    ();
-      ImGui::TextUnformatted ("Render the entire scene using MSAA instead of just a few polygons here and there.");
-      ImGui::Separator       ();
-      ImGui::BulletText      ("Only works in Fullscreen Mode right now");
-      ImGui::BulletText      ("To use Fullscreen Mode, ensure Flip Model is disabled in SwapChain settings.");
-      ImGui::EndTooltip      ();
+      ImGui::SetTooltip ("Render the Entire Scene Using MSAA Instead of Only a Handful of Geometry.");
     }
 
     if (__SK_TVFix_FixMSAA || config.render.dxgi.msaa_samples != -1)
@@ -484,6 +405,9 @@ SK_TVFix_PlugInCfg (void)
         else
           config.render.dxgi.msaa_samples = -1;
       }
+
+      if (ImGui::IsItemHovered ())
+        ImGui::SetTooltip ("NOTE: You must set the game's gfx settings to 4x MSAA for these overrides to work.");
 
       if (orig_samples != config.render.dxgi.msaa_samples)
       {
@@ -769,7 +693,7 @@ SK_TVFix_BeginFrame (void)
     CComQIPtr  <IDXGIDevice> pDXGIDev (pDev);
 
     if (pDXGIDev != nullptr)
-    {   pDXGIDev->SetGPUThreadPriority (4); }
+    {   pDXGIDev->SetGPUThreadPriority (5); }
   }
 
   static bool enable =
@@ -787,6 +711,82 @@ SK_TVFix_BeginFrame (void)
 
     extern void SK_CEGUI_QueueResetD3D11 (void);
     SK_RunOnce (SK_CEGUI_QueueResetD3D11 ());
+
+    if (ulFramesDrawn == 31)
+    {
+      CComQIPtr <ID3D11Device> pDevD3D11 (rb.device);
+      CComQIPtr <IDXGIDevice>  pDXGIDev  (pDevD3D11);
+
+      if (pDXGIDev != nullptr)
+      {
+        INT nPrio = 0;
+        //pDXGIDev->GetGPUThreadPriority (&nPrio);
+
+        dll_log.Log (L"GPU Priority Was: %li", nPrio);
+
+        //pDev->SetGPUThreadPriority (7);
+        //pDev->GetGPUThreadPriority (&nPrio);
+        //
+        //dll_log.Log (L"GPU Priority Is: %li", nPrio);
+      }
+
+      SK_D3D11_DeclHUDShader_Vtx (0xb0831a43);
+      SK_D3D11_DeclHUDShader_Vtx (0xf4dac9d5);
+    //SK_D3D11_DeclHUDShader_Pix (0x6d243285);
+
+      instn__model_animation.scan  ();
+      instn__particle_effects.scan ();
+      instn__depth_of_field.scan   ();
+      instn__blur.scan             ();
+      instn__bloom.scan            ();
+
+      _SK_TVFix_DisableDepthOfField =
+        _CreateConfigParameterBool ( L"TVFix.Render",
+                                     L"DisableDepthOfField",  __SK_TVFix_DisableDepthOfField,
+                                     L"Disable Depth of Field" );
+
+      _SK_TVFix_DisableBloom =
+        _CreateConfigParameterBool ( L"TVFix.Render",
+                                     L"DisableBloom",  __SK_TVFix_DisableBloom,
+                                     L"Disable Bloom Lighting" );
+
+      _SK_TVFix_DisableBlur =
+        _CreateConfigParameterBool ( L"TVFix.Render",
+                                     L"DisableBlur",  __SK_TVFix_DisableBlur,
+                                     L"Disable Blur" );
+
+      _SK_TVFix_SharpenShadows =
+        _CreateConfigParameterBool ( L"TVFix.Render",
+                                    L"SharpenShadows",  __SK_TVFix_SharpenShadows,
+                                    L"Sharpen Shadows" );
+
+      _SK_TVFix_ActiveAntiStutter =
+        _CreateConfigParameterBool ( L"TVFix.FrameRate",
+                                     L"EliminateMicroStutter", __SK_TVFix_ActiveAntiStutter,
+                                     L"Active Anti-Stutter" );
+
+      if (__SK_TVFix_DisableDepthOfField)
+      {
+        ////instn__depth_of_field.disable ();
+        SK_D3D11_Shaders.pixel.addTrackingRef (SK_D3D11_Shaders.pixel.blacklist, 0x27fbcdeb); 
+        SK_D3D11_Shaders.pixel.addTrackingRef (SK_D3D11_Shaders.pixel.blacklist, 0x8dfd78fd);
+      }
+
+      if (__SK_TVFix_DisableBloom)
+      {
+        instn__bloom.disable ();
+      }
+
+      if (__SK_TVFix_DisableBlur)
+      {
+        instn__blur.disable ();
+      }
+
+      if (__SK_TVFix_SharpenShadows)
+      {
+        //SK_D3D11_Shaders.pixel.addTrackingRef (SK_D3D11_Shaders.pixel.blacklist, PS_CRC32_SHADOWFILTER);
+      }
+    }
   }
 
   _SK_TVFix_LastKnown_XRes->store ((int)ImGui::GetIO ().DisplaySize.x);
@@ -798,14 +798,10 @@ void
 SK_TVFix_CreateTexture2D (
   D3D11_TEXTURE2D_DESC    *pDesc )
 {
-  extern bool __SK_HDR_16BitSwap;
-
   if (__SK_HDR_16BitSwap)
   {
-    if ( ( pDesc->BindFlags & D3D11_BIND_RENDER_TARGET  )         &&
-         ( pDesc->Format   ==  DXGI_FORMAT_B8G8R8A8_UNORM)        &&
-           pDesc->Width    == (unsigned)__SK_TVFix_LastKnown_XRes &&
-           pDesc->Height   == (unsigned)__SK_TVFix_LastKnown_YRes )
+    if ( ( pDesc->BindFlags & D3D11_BIND_RENDER_TARGET  ) &&
+         ( pDesc->Format   == DXGI_FORMAT_B8G8R8A8_UNORM) )
     {
       pDesc->Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
     }
