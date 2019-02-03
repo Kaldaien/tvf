@@ -32,7 +32,7 @@
 
 #include <imgui/imgui.h>
 
-#define TVFIX_VERSION_NUM L"0.5.0"
+#define TVFIX_VERSION_NUM L"0.5.1"
 #define TVFIX_VERSION_STR LR"(Tales of Vesperia "Fix" v )" TVFIX_VERSION_NUM
 
 extern iSK_INI*             dll_ini;
@@ -431,7 +431,8 @@ SK_TVFix_PlugInCfg (void)
     ImGui::SameLine (); ImGui::Spacing (); ImGui::SameLine (); ImGui::Spacing ();
     ImGui::SameLine (); ImGui::Spacing (); ImGui::SameLine ();
 
-    ImGui::Checkbox ("Fix MSAA###SK_TVFIX_MSAA", &__SK_TVFix_FixMSAA);
+    ImGui::BeginGroup ();
+    ImGui::Checkbox   ("Fix MSAA###SK_TVFIX_MSAA", &__SK_TVFix_FixMSAA);
 
     if (ImGui::IsItemHovered ())
     {
@@ -443,6 +444,55 @@ SK_TVFix_PlugInCfg (void)
       ImGui::EndTooltip      ();
     }
 
+    if (__SK_TVFix_FixMSAA || config.render.dxgi.msaa_samples != -1)
+    {
+      ImGui::SameLine ();
+
+      int sample_idx;
+
+      switch (config.render.dxgi.msaa_samples)
+      {
+        default:
+        case -1:
+          sample_idx = 0;
+          break;
+
+        case 2:
+          sample_idx = 1;
+          break;
+
+        case 4:
+          sample_idx = 2;
+          break;
+
+        case 8:
+          sample_idx = 3;
+          break;
+      }
+
+      static int orig_samples =
+        config.render.dxgi.msaa_samples;
+
+      if (ImGui::Combo ("###SK_TVFix_MSAA_Combo", &sample_idx, "No Override\0 2x\0 4x\0 8x\0\0"))
+      {
+        if (sample_idx > 0)
+        {
+          config.render.dxgi.msaa_samples =
+            1 << sample_idx;
+        }
+
+        else
+          config.render.dxgi.msaa_samples = -1;
+      }
+
+      if (orig_samples != config.render.dxgi.msaa_samples)
+      {
+        ImGui::PushStyleColor (ImGuiCol_Text, ImColor::HSV (.3f, .8f, .9f));
+        ImGui::BulletText     ("Game Restart Required");
+        ImGui::PopStyleColor  ();
+      }
+    }
+    ImGui::EndGroup ();
 #if 0
     ImGui::SameLine        (             );
     ImGui::TextUnformatted ("Gamepad:   ");
@@ -719,7 +769,7 @@ SK_TVFix_BeginFrame (void)
     CComQIPtr  <IDXGIDevice> pDXGIDev (pDev);
 
     if (pDXGIDev != nullptr)
-    {   pDXGIDev->SetGPUThreadPriority (6); }
+    {   pDXGIDev->SetGPUThreadPriority (4); }
   }
 
   static bool enable =
@@ -730,10 +780,10 @@ SK_TVFix_BeginFrame (void)
 
   if (ulFramesDrawn > 30 && ulFramesDrawn < 33)
   {
-    if (     ulFramesDrawn == 31)
+    if (ulFramesDrawn == 31)
       config.cegui.enable = (! enable);
     else if (ulFramesDrawn == 32)
-      config.cegui.enable =    enable;
+      config.cegui.enable = enable;
 
     extern void SK_CEGUI_QueueResetD3D11 (void);
     SK_RunOnce (SK_CEGUI_QueueResetD3D11 ());
@@ -759,6 +809,13 @@ SK_TVFix_CreateTexture2D (
     {
       pDesc->Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
     }
+  }
+
+  if (pDesc->SampleDesc.Count != 1)
+  {
+    pDesc->SampleDesc.Count =
+      ( config.render.dxgi.msaa_samples != -1 ?
+        config.render.dxgi.msaa_samples : pDesc->SampleDesc.Count );
   }
 }
 
