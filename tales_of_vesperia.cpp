@@ -32,8 +32,11 @@
 
 #include <imgui/imgui.h>
 
-#define TVFIX_VERSION_NUM L"0.5.1.2"
+#define TVFIX_VERSION_NUM L"0.5.2"
 #define TVFIX_VERSION_STR LR"(Tales of Vesperia "Fix" v )" TVFIX_VERSION_NUM
+
+#pragma warning(push)
+#pragma warning(disable: 4244)
 
 extern iSK_INI*             dll_ini;
 extern sk::ParameterFactory g_ParameterFactory;
@@ -214,6 +217,8 @@ tv_mem_addr_s instn__draw_HUD         = { };
 // TOV_DE.exe+6F632A - E8 C15C0300           - call TOV_DE.exe+72BFF0 { Bloom Lighting }
 // TOV_DE.exe+6F6375 - E8 A69E0300           - call TOV_DE.exe+730220 { Bloom Lighting 2 }
 
+
+bool __SK_TVFix_AspectRatioCorrection = false;
 
 sk::ParameterBool* _SK_TVFix_DisableDepthOfField;
 bool              __SK_TVFix_DisableDepthOfField = false;
@@ -703,6 +708,8 @@ SK_TVFix_PlugInCfg (void)
         instn__particle_effects.toggle ();
       }
 
+      ImGui::Checkbox ("Aspect Ratio Correction", &__SK_TVFix_AspectRatioCorrection);
+
       ImGui::EndGroup (  );
       ImGui::TreePop  (  );
     }
@@ -841,6 +848,21 @@ void
 SK_TVFix_CreateTexture2D (
   D3D11_TEXTURE2D_DESC    *pDesc )
 {
+  ///if (pDesc->Width == 16 * (pDesc->Height / 9))
+  ///{
+  ///  if (pDesc->Height <= __SK_TVFix_LastKnown_YRes / 2)
+  ///  {
+  ///    pDesc->Width  = __SK_TVFix_LastKnown_XRes / 2;
+  ///    pDesc->Height = __SK_TVFix_LastKnown_YRes / 2;
+  ///  }
+  ///
+  ///  else
+  ///  {
+  ///    pDesc->Width  = __SK_TVFix_LastKnown_XRes;
+  ///    pDesc->Height = __SK_TVFix_LastKnown_YRes;
+  ///  }
+  ///}
+
   if (__SK_HDR_16BitSwap)
   {
     if ( ( pDesc->BindFlags & D3D11_BIND_RENDER_TARGET  ) &&
@@ -1018,3 +1040,114 @@ SK_TVFix_DrawHandler_D3D11 (ID3D11DeviceContext* pDevCtx, SK_TLS* pTLS = nullptr
 
   return false;
 }
+
+bool
+SK_EpsilonTest (float x1, float x2, float tolerance = 0.000001f)
+{
+  if (x1 == x2)
+    return true;
+
+  if ( x1 <= (x2 + tolerance) &&
+       x1 >= (x2 - tolerance) )
+    return true;
+
+  return false;
+}
+
+bool
+STDMETHODCALLTYPE
+SK_TVFix_D3D11_RSSetViewports_Callback (
+        ID3D11DeviceContext *This,
+        UINT                 NumViewports,
+  const D3D11_VIEWPORT      *pViewports )
+{
+  if (NumViewports == 1 && __SK_TVFix_AspectRatioCorrection)
+  {
+    D3D11_VIEWPORT vp = *pViewports;
+
+    if (SK_EpsilonTest (vp.Width, 16.0f * ((float)__SK_TVFix_LastKnown_YRes / 9.0f), 2.0f) &&
+        SK_EpsilonTest (vp.Height,         (float)__SK_TVFix_LastKnown_YRes,         2.0f))
+    {
+      float expected = 
+        vp.Width;
+      float actual   = 
+        (float)__SK_TVFix_LastKnown_XRes;
+
+      vp.Width = actual;
+
+      if (SK_EpsilonTest (vp.TopLeftX, (actual - expected) / 2.0f, 2.0f/9.0f))
+        vp.TopLeftX = 0.0f;
+    }
+
+    if (config.system.log_level > 1)
+    {
+      dll_log.Log ( L"  VP0 -- (%8.3f x %8.3f) | <%5.2f, %5.2f> | [%3.1f - %3.1f]",
+                   pViewports->Width,    pViewports->Height,
+                   pViewports->TopLeftX, pViewports->TopLeftY,
+                   pViewports->MinDepth, pViewports->MaxDepth );
+    }
+
+    This->RSSetViewports (1, &vp);
+
+    return true;
+  }
+
+  return false;
+}
+
+
+bool
+STDMETHODCALLTYPE
+SK_TVFix_D3D11_RSSetScissorRects_Callback (
+        ID3D11DeviceContext *This,
+        UINT                 NumRects,
+  const D3D11_RECT          *pRects )
+{
+  if (NumRects == 1 && __SK_TVFix_AspectRatioCorrection)
+  {
+    LONG sixteen_by_nine_width = LONG (
+      16.0f * ((float)__SK_TVFix_LastKnown_YRes / 9.0f)
+    );
+    LONG sixteen_by_nine_height = LONG (
+      __SK_TVFix_LastKnown_YRes//9.0f * ((float)__SK_TVFix_LastKnown_XRes / 16.0f)
+    );
+
+    LONG overwidth_half_adjust =
+      ( __SK_TVFix_LastKnown_XRes - sixteen_by_nine_width ) / 2;
+
+    D3D11_RECT rect = *pRects;
+
+    if (                rect.left   == 0                             &&
+        SK_EpsilonTest (rect.right,    
+        sixteen_by_nine_width,  2.0f) &&
+        SK_EpsilonTest (rect.bottom,   sixteen_by_nine_height, 2.0f) &&
+                        rect.top    == 0 )
+    {
+      rect.right = __SK_TVFix_LastKnown_XRes;
+    }
+
+    if (SK_EpsilonTest (rect.left,   overwidth_half_adjust,  2.0f) &&
+        SK_EpsilonTest (rect.right,  sixteen_by_nine_width,  2.0f) &&
+        SK_EpsilonTest (rect.bottom, sixteen_by_nine_height, 2.0f) &&
+        SK_EpsilonTest (rect.top,    0,                      2.0f))
+    {
+      rect.right = __SK_TVFix_LastKnown_XRes;
+      rect.left  =    0;
+    }
+
+    if (config.system.log_level > 1)
+    {
+      dll_log.Log ( L"  Scissor0 -- (%li - %li), (%li - %li)",
+                   rect.left,    rect.right,
+                   rect.bottom,  rect.top );
+    }
+
+    This->RSSetScissorRects (1, &rect);
+
+    return true;
+  }
+
+  return false;
+}
+
+#pragma warning (pop)
